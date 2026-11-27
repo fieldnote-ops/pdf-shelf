@@ -1,5 +1,7 @@
 # PDF 书架
 
+[![check](https://github.com/fieldnote-ops/pdf-shelf/actions/workflows/check.yml/badge.svg)](https://github.com/fieldnote-ops/pdf-shelf/actions/workflows/check.yml)
+
 个人整理的系统与工程 PDF：逐本收录，保留版本、校验值和缺口说明。不求多，只收自己读过、整理过、说得清来源的。
 
 > [!IMPORTANT]
