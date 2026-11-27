@@ -1,8 +1,9 @@
 # 从内核到智能体：系统原理解剖图解全集
 
-- 文件：[`从内核到智能体-系统原理解剖图解全集-2026.11.pdf`](<从内核到智能体-系统原理解剖图解全集-2026.11.pdf>)
+- 下载：[从内核到智能体-系统原理解剖图解全集-2026.11.pdf](<https://github.com/fieldnote-ops/pdf-shelf/releases/download/v2026.11/从内核到智能体-系统原理解剖图解全集-2026.11.pdf>)（13.1 MiB）
 - 版本：2026.11，2026-11-18 构建
-- 规模：两卷八篇，1140 页，13.1 MiB
+- 规模：两卷八篇，1140 页
+- sha256：`5d6d3625ba3c366cdf3aff11f54fe1eb5f8d38e871cdca32c59b2e986eda4516`
 - 构建：Typst 0.15.1，`ALL_BOOK_PROFILE=full`
 - 许可：CC BY-NC-SA 4.0
 
@@ -25,10 +26,12 @@
 
 **第七篇「完整嵌入式系统」尚未整合完整。** 本版收录 24 章（书内 p991–1118），覆盖复位、测量、RTOS、控制、通信、低功耗、OTA 与证据的当前链路，是阶段性快照；章节级补全后以新版 PDF 发布，不覆盖本文件。范围与判断依据见 [嵌入式现状](../../docs/嵌入式现状.md)。
 
-## 校验
+## 下载与校验
+
+PDF 由 Release 托管，不在 git 里。推荐：
 
 ```bash
-python3 scripts/check_repo.py
+scripts/fetch.sh system-atlas
 ```
 
-文件哈希与页数记录在 [`catalog.yaml`](../../catalog.yaml)。
+也可用 `gh release download v2026.11 -p '*.pdf'`；哈希见 [`SHA256SUMS`](../../SHA256SUMS)。

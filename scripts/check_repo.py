@@ -1,23 +1,44 @@
 #!/usr/bin/env python3
-"""校验书架：catalog.yaml ↔ PDF 文件 ↔ 页数/大小/sha256 ↔ README 收录表。"""
+"""离线校验书架：catalog.yaml ↔ README 表格 ↔ SHA256SUMS。
+
+不下载 PDF、不访问网络。只确认元数据自洽、下载地址指向本仓库的 Release 资产。
+PDF 是否真的可下载，由发布后手动跑一次 scripts/fetch.sh 验证。
+"""
 
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import re
-import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / "catalog.yaml"
 README = ROOT / "README.md"
+SUMS = ROOT / "SHA256SUMS"
 BEGIN = "<!-- catalog:begin -->"
 END = "<!-- catalog:end -->"
-REQUIRED = ("id", "title", "series", "version", "date", "size_bytes", "sha256", "path", "status")
+URL_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/(.+)$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+VERSION_RE = re.compile(r"^\d{4}\.\d{2}$")
+REQUIRED = (
+    "id",
+    "title",
+    "series",
+    "version",
+    "tag",
+    "date",
+    "pages",
+    "size_bytes",
+    "sha256",
+    "filename",
+    "download_url",
+    "status",
+)
 VALID_STATUS = {"complete", "partial", "draft"}
 
 errors: list[str] = []
@@ -32,34 +53,26 @@ def warn(msg: str) -> None:
     warnings.append(msg)
 
 
-def sha256_of(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def pdf_pages(path: Path) -> int | None:
-    try:
-        out = subprocess.run(
-            ["pdfinfo", str(path)], capture_output=True, text=True, check=True
-        ).stdout
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return None
-    for line in out.splitlines():
-        if line.startswith("Pages:"):
-            try:
-                return int(line.split(":", 1)[1].strip())
-            except ValueError:
-                return None
-    return None
-
-
 def human_size(size: int) -> str:
     if size >= 1024 * 1024:
         return f"{size / 1024 / 1024:.1f} MiB"
     return f"{size / 1024:.0f} KiB"
+
+
+def parse_sums(text: str) -> set[tuple[str, str]]:
+    pairs: set[tuple[str, str]] = set()
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        parts = line.split("  ", 1)
+        if len(parts) != 2:
+            error(f"SHA256SUMS 第 {number} 行格式不对：{line!r}")
+            continue
+        digest, name = parts
+        if not HEX64.fullmatch(digest):
+            error(f"SHA256SUMS 第 {number} 行哈希非法：{digest!r}")
+        pairs.add((digest, name))
+    return pairs
 
 
 def main() -> int:
@@ -67,8 +80,8 @@ def main() -> int:
         print("错误：缺少 catalog.yaml", file=sys.stderr)
         return 1
     data = yaml.safe_load(CATALOG.read_text(encoding="utf-8")) or {}
-    if data.get("schema") != 1:
-        error(f"catalog schema 应为 1，实际 {data.get('schema')!r}")
+    if data.get("schema") != 2:
+        error(f"catalog schema 应为 2，实际 {data.get('schema')!r}")
     entries = data.get("entries")
     if not isinstance(entries, list):
         print("错误：catalog.entries 必须是列表", file=sys.stderr)
@@ -84,10 +97,18 @@ def main() -> int:
     if BEGIN not in readme_text or END not in readme_text:
         error(f"README.md 缺少标记 {BEGIN} / {END}")
 
+    if not SUMS.is_file():
+        error("缺少 SHA256SUMS")
+        sums: set[tuple[str, str]] = set()
+    else:
+        sums = parse_sums(SUMS.read_text(encoding="utf-8"))
+
+    catalog_pairs: set[tuple[str, str]] = set()
     seen_ids: set[str] = set()
-    seen_paths: set[str] = set()
-    total_pages = 0
-    total_size = 0
+    seen_names: set[str] = set()
+    seen_urls: set[str] = set()
+    repos: set[str] = set()
+
     for index, entry in enumerate(entries, start=1):
         label = entry.get("title") or f"第 {index} 条"
         if not isinstance(entry, dict):
@@ -97,47 +118,72 @@ def main() -> int:
         if missing:
             error(f"{label}：缺少字段 {', '.join(missing)}")
             continue
-        entry_id = str(entry["id"])
-        if entry_id in seen_ids:
-            error(f"id 重复：{entry_id}")
-        seen_ids.add(entry_id)
+
+        if not ID_RE.fullmatch(str(entry["id"])):
+            error(f"{label}：id 非法 {entry['id']!r}")
+        if str(entry["id"]) in seen_ids:
+            error(f"id 重复：{entry['id']}")
+        seen_ids.add(str(entry["id"]))
+
         if entry.get("status") not in VALID_STATUS:
             error(f"{label}：非法 status {entry.get('status')!r}")
-        if not re.fullmatch(r"\d{4}\.\d{2}", str(entry["version"])):
+        if not VERSION_RE.fullmatch(str(entry["version"])):
             error(f"{label}：version 应形如 2026.11")
+        if str(entry["tag"]) != f"v{entry['version']}":
+            error(f"{label}：tag 应等于 v{entry['version']}，实际 {entry['tag']!r}")
+        try:
+            dt.date.fromisoformat(str(entry["date"]))
+        except ValueError:
+            error(f"{label}：date 不是 ISO 日期：{entry['date']!r}")
 
-        relative = Path(str(entry["path"]))
-        if relative.is_absolute() or ".." in relative.parts:
-            error(f"{label}：path 必须是仓库内相对路径：{relative}")
-            continue
-        if relative.as_posix() in seen_paths:
-            error(f"path 重复：{relative}")
-        seen_paths.add(relative.as_posix())
-        if relative.as_posix() not in readme_text:
-            error(f"{label}：README 收录表未包含 {relative}")
+        if not isinstance(entry["pages"], int) or entry["pages"] <= 0:
+            error(f"{label}：pages 必须是正整数")
+        if not isinstance(entry["size_bytes"], int) or entry["size_bytes"] <= 0:
+            error(f"{label}：size_bytes 必须是正整数")
+        if not HEX64.fullmatch(str(entry["sha256"])):
+            error(f"{label}：sha256 必须是 64 位小写十六进制")
 
-        file = ROOT / relative
-        if not file.is_file():
-            error(f"{label}：文件不存在 {relative}")
-            continue
-        size = file.stat().st_size
-        if size != entry["size_bytes"]:
-            error(f"{label}：大小不符，catalog {entry['size_bytes']} / 实际 {size}")
-        digest = sha256_of(file)
-        if digest != entry["sha256"]:
-            error(f"{label}：sha256 不符，catalog {str(entry['sha256'])[:12]}… / 实际 {digest[:12]}…")
+        filename = str(entry["filename"])
+        if "/" in filename or not filename.lower().endswith(".pdf"):
+            error(f"{label}：filename 必须是单个 PDF 文件名")
+        if filename in seen_names:
+            error(f"filename 重复：{filename}")
+        seen_names.add(filename)
 
-        pages = pdf_pages(file)
-        if pages is None:
-            warn(f"{label}：本机缺少 pdfinfo，跳过页数校验")
-        elif entry.get("pages") is None:
-            warn(f"{label}：catalog 未记录页数")
-        elif pages != entry["pages"]:
-            error(f"{label}：页数不符，catalog {entry['pages']} / 实际 {pages}")
+        url = str(entry["download_url"])
+        matched = URL_RE.fullmatch(url)
+        if not matched:
+            error(f"{label}：download_url 不是 GitHub Release 资产地址：{url}")
+        else:
+            repos.add(f"{matched.group(1)}/{matched.group(2)}")
+            if matched.group(3) != entry["tag"]:
+                error(f"{label}：地址里的 tag 与 tag 字段不一致")
+            if unquote(matched.group(4)) != filename:
+                error(f"{label}：地址里的文件名与 filename 不一致")
+        if url in seen_urls:
+            error(f"download_url 重复：{url}")
+        seen_urls.add(url)
+        if url not in readme_text:
+            error(f"{label}：README 里没有下载地址")
 
-        total_pages += int(entry.get("pages") or 0)
-        total_size += int(entry["size_bytes"])
-        print(f"✓ {label}  {entry.get('pages') or '?'} 页 / {human_size(size)}")
+        mirrors = entry.get("mirrors", [])
+        if not isinstance(mirrors, list):
+            error(f"{label}：mirrors 必须是列表")
+        else:
+            for mirror in mirrors:
+                if not str(mirror).startswith("https://"):
+                    error(f"{label}：mirror 必须是 https 地址：{mirror}")
+
+        catalog_pairs.add((str(entry["sha256"]), filename))
+        print(f"✓ {label}  {entry['pages']} 页 / {human_size(int(entry['size_bytes']))}  →  {entry['tag']}")
+
+    if len(repos) > 1:
+        error(f"同一 catalog 里出现了多个仓库：{', '.join(sorted(repos))}")
+    if catalog_pairs != sums:
+        for pair in sorted(catalog_pairs - sums):
+            error(f"SHA256SUMS 缺少：{pair[1]}")
+        for pair in sorted(sums - catalog_pairs):
+            warn(f"SHA256SUMS 多出：{pair[1]}")
 
     for message in warnings:
         print(f"警告：{message}", file=sys.stderr)
@@ -146,7 +192,7 @@ def main() -> int:
     if errors:
         print(f"\n共 {len(errors)} 处错误。", file=sys.stderr)
         return 1
-    print(f"\n通过：{len(entries)} 本 / {total_pages} 页 / {human_size(total_size)}。")
+    print(f"\n通过：{len(entries)} 本（离线校验，不访问网络）。")
     return 0
 
 

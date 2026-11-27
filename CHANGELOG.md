@@ -3,6 +3,8 @@
 ## 未发布
 
 - 接入 GitHub Actions：push / PR 时运行 `scripts/check_repo.py`。
+- PDF 移出 git：改由 GitHub Release 资产分发，仓库只保留目录、元数据与校验脚本。
+- 新增 `scripts/fetch.sh`（断点续传 + sha256）与 `SHA256SUMS`；`check_repo.py` 改为纯离线校验。
 
 ## 2026.11 — 2026-11-27
 

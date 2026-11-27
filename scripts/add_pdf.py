@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""把一本 PDF 收录进书架。
+"""登记一本 PDF：读取元数据，写入 catalog、README 表格与 SHA256SUMS。
 
-复制文件到 pdfs/<系列>/，读取页数/大小/哈希，写入 catalog.yaml，
-并重新生成 README 的收录表。catalog 是唯一事实来源，README 不要手改。
+PDF 本身不进 git，也不由本脚本保存；它由 GitHub Release 托管。
+校验脚本只做离线一致性检查，不访问网络。
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -21,6 +22,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / "catalog.yaml"
 README = ROOT / "README.md"
+SUMS = ROOT / "SHA256SUMS"
 BEGIN = "<!-- catalog:begin -->"
 END = "<!-- catalog:end -->"
 STATUS_LABELS = {
@@ -78,8 +80,9 @@ def pdf_meta(path: Path) -> tuple[int | None, str | None]:
 
 
 def safe_name(text: str) -> str:
-    """去掉路径分隔符与 Windows 非法字符，保留中文。"""
-    return re.sub(r'[\\/:*?"<>|]', "-", text).strip()
+    """去掉路径分隔符、Windows 非法字符与空白，保留中文。"""
+    text = re.sub(r'[\\/:*?"<>|]', "-", text)
+    return re.sub(r"\s+", "-", text).strip("-")
 
 
 def human_size(size: int) -> str:
@@ -92,16 +95,40 @@ def cell(text: object) -> str:
     return str(text).replace("|", "\\|")
 
 
+def repo_slug(explicit: str | None) -> str:
+    if explicit:
+        slug = explicit
+    else:
+        try:
+            remote = subprocess.run(
+                ["git", "config", "--get", "remote.origin.url"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            fail("读不到 git remote.origin.url，请用 --repo owner/repo 指定")
+        matched = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$", remote)
+        if not matched:
+            fail(f"无法从 remote 解析仓库：{remote}")
+        slug = f"{matched.group(1)}/{matched.group(2)}"
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", slug):
+        fail(f"仓库名应形如 owner/repo：{slug}")
+    return slug
+
+
 def load_catalog() -> dict:
     if not CATALOG.exists():
-        return {"schema": 1, "updated": dt.date.today().isoformat(), "entries": []}
+        return {"schema": 2, "updated": dt.date.today().isoformat(), "entries": []}
     data = yaml.safe_load(CATALOG.read_text(encoding="utf-8")) or {}
-    data.setdefault("schema", 1)
+    data.setdefault("schema", 2)
     data.setdefault("entries", [])
     return data
 
 
 def save_catalog(data: dict) -> None:
+    data["schema"] = 2
     data["updated"] = dt.date.today().isoformat()
     CATALOG.write_text(
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=100),
@@ -109,26 +136,33 @@ def save_catalog(data: dict) -> None:
     )
 
 
+def write_sums(entries: list[dict]) -> None:
+    lines = [
+        f"{entry['sha256']}  {entry['filename']}"
+        for entry in sorted(entries, key=lambda item: item["filename"])
+    ]
+    SUMS.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def render_table(entries: list[dict]) -> str:
-    total_pages = sum(e.get("pages") or 0 for e in entries)
-    total_size = sum(int(e["size_bytes"]) for e in entries)
+    total_pages = sum(int(entry.get("pages") or 0) for entry in entries)
+    total_size = sum(int(entry["size_bytes"]) for entry in entries)
     lines = [
         f"共 {len(entries)} 本，合计 {total_pages} 页，{human_size(total_size)}。",
         "",
-        "| 系列 | 书名 | 版本 | 页数 | 大小 | 更新 | 状态 | 文件 |",
-        "|---|---|---|---|---|---|---|---|",
+        "| 系列 | 书名 | 版本 | 页数 | 大小 | 状态 | 下载 |",
+        "|---|---|---|---|---|---|---|",
     ]
     for entry in entries:
         lines.append(
-            "| {series} | {title} | {version} | {pages} | {size} | {date} | {status} | {link} |".format(
+            "| {series} | {title} | {version} | {pages} | {size} | {status} | {link} |".format(
                 series=cell(entry.get("series", "")),
                 title=cell(entry["title"]),
                 version=cell(entry.get("version", "")),
                 pages=entry.get("pages") or "—",
                 size=human_size(int(entry["size_bytes"])),
-                date=cell(entry.get("date", "")),
                 status=STATUS_LABELS.get(entry.get("status", "complete"), entry.get("status", "")),
-                link=f"[`{Path(entry['path']).name}`](<{entry['path']}>)",
+                link=f"[PDF](<{entry['download_url']}>)",
             )
         )
 
@@ -149,23 +183,38 @@ def update_readme(table: str) -> None:
     README.write_text(re.sub(pattern, lambda _: replacement, text, flags=re.S), encoding="utf-8")
 
 
+def upload_asset(tag: str, source: Path, filename: str) -> None:
+    """把源文件以目标文件名上传到已存在的 Release。"""
+    with tempfile.TemporaryDirectory(prefix="pdf-shelf-upload-") as tmp:
+        named = Path(tmp) / filename
+        shutil.copy2(source, named)
+        result = subprocess.run(
+            ["gh", "release", "upload", tag, str(named), "--clobber"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+    if result.returncode != 0:
+        fail(f"上传失败（Release {tag} 是否已存在？）：{result.stderr.strip()}")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="收录一本 PDF，并更新 catalog.yaml 与 README.md"
-    )
-    parser.add_argument("--file", required=True, type=Path, help="源 PDF 路径")
-    parser.add_argument("--id", required=True, help="稳定的 ASCII 标识，如 from-kernel-to-agent")
+    parser = argparse.ArgumentParser(description="登记一本 PDF 到书架（PDF 由 Release 托管）")
+    parser.add_argument("--file", required=True, type=Path, help="本地 PDF，用于计算页数/大小/哈希")
+    parser.add_argument("--id", required=True, help="稳定的 ASCII 标识，如 system-atlas")
     parser.add_argument("--series", required=True, help="系列目录名，如 从内核到智能体")
     parser.add_argument("--title", required=True, help="书名")
     parser.add_argument("--version", required=True, help="版本号，形如 2026.11")
-    parser.add_argument("--filename", help="仓库内文件名，默认 <书名>-<版本>.pdf")
-    parser.add_argument(
-        "--status", default="complete", choices=sorted(STATUS_LABELS), help="整合状态"
-    )
+    parser.add_argument("--tag", help="Release tag，默认 v<version>")
+    parser.add_argument("--filename", help="Release 资产文件名，默认 <书名>-<版本>.pdf")
+    parser.add_argument("--status", default="complete", choices=sorted(STATUS_LABELS))
     parser.add_argument("--status-note", default="", help="状态说明，写在 README 表下方")
     parser.add_argument("--source", default="", help="构建来源，如 Typst 0.15.1 / docs 仓库")
-    parser.add_argument("--dry-run", action="store_true", help="只校验并打印，不写文件")
-    parser.add_argument("--replace", action="store_true", help="同 id 换版：覆盖旧条目与旧文件")
+    parser.add_argument("--mirror", action="append", default=[], help="备用下载地址，可重复")
+    parser.add_argument("--repo", help="owner/repo，默认从 git remote 推断")
+    parser.add_argument("--replace", action="store_true", help="同 id 换版：替换旧条目")
+    parser.add_argument("--upload", action="store_true", help="登记后把 PDF 传到已存在的 Release")
+    parser.add_argument("--dry-run", action="store_true", help="只打印条目，不写文件")
     args = parser.parse_args()
 
     source = args.file.expanduser().resolve()
@@ -177,41 +226,51 @@ def main() -> None:
         fail("--id 只能用小写字母、数字和连字符")
     if not re.fullmatch(r"\d{4}\.\d{2}", args.version):
         fail("--version 形如 2026.11")
+    tag = args.tag or f"v{args.version}"
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", tag):
+        fail(f"tag 非法：{tag}")
 
     data = load_catalog()
     entries = data["entries"]
     existing = next((entry for entry in entries if entry.get("id") == args.id), None)
     if existing and not args.replace:
-        fail(f"catalog 已存在 id：{args.id}（换版请加 --replace，见 docs/收录流程.md）")
+        fail(f"catalog 已存在 id：{args.id}（换版请加 --replace）")
 
     title = args.title.strip()
     filename = safe_name(args.filename or f"{title}-{args.version}.pdf")
     if not filename.lower().endswith(".pdf"):
         filename += ".pdf"
-    relative = Path("pdfs") / safe_name(args.series) / filename
-    target = ROOT / relative
-    digest = sha256_of(source)
-    same_path = bool(existing and existing.get("path") == relative.as_posix())
-    if target.exists() and sha256_of(target) != digest and not same_path:
-        fail(f"目标已存在且内容不同：{relative}")
 
     size = source.stat().st_size
+    if size > 2 * 1024 * 1024 * 1024:
+        fail(f"文件 {human_size(size)} 超过 GitHub Release 单资产 2 GB 上限")
     if size > 100 * 1024 * 1024:
-        fail(f"文件 {human_size(size)} 超过 GitHub 100 MB 单文件上限")
-    if size > 50 * 1024 * 1024:
-        print(f"注意：{human_size(size)} 偏大，建议改用 GitHub Releases 托管。", file=sys.stderr)
+        print(f"注意：{human_size(size)} 偏大，下载体验可能较差。", file=sys.stderr)
 
     pages, date = pdf_meta(source)
+    if pages is None:
+        print("警告：读不到页数（缺 pdfinfo），catalog 将记为空。", file=sys.stderr)
+
+    slug = repo_slug(args.repo)
+    download_url = f"https://github.com/{slug}/releases/download/{tag}/{filename}"
+    mirrors = [item.strip() for item in args.mirror if item.strip()]
+    for mirror in mirrors:
+        if not mirror.startswith("https://"):
+            fail(f"mirror 必须是 https 地址：{mirror}")
+
     entry = {
         "id": args.id,
         "title": title,
         "series": args.series,
         "version": args.version,
+        "tag": tag,
         "date": date or dt.date.today().isoformat(),
         "pages": pages,
         "size_bytes": size,
-        "sha256": digest,
-        "path": relative.as_posix(),
+        "sha256": sha256_of(source),
+        "filename": filename,
+        "download_url": download_url,
+        "mirrors": mirrors,
         "status": args.status,
         "status_note": args.status_note,
         "source": args.source,
@@ -222,27 +281,22 @@ def main() -> None:
 
     if args.dry_run:
         print(yaml.safe_dump(entry, allow_unicode=True, sort_keys=False).rstrip())
-        action = "替换" if existing else "新增"
-        print(f"[dry-run] 将{action} {relative}，并更新 catalog/README")
+        print(f"[dry-run] 将登记 {filename}（{download_url}）")
         return
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists() or sha256_of(target) != digest:
-        shutil.copy2(source, target)
+    if args.upload:
+        upload_asset(tag, source, filename)
+
     if existing:
-        old_file = ROOT / str(existing["path"])
-        if old_file != target and old_file.exists():
-            old_file.unlink()
         entries.remove(existing)
     entries.append(entry)
     save_catalog(data)
     update_readme(render_table(entries))
+    write_sums(entries)
 
-    print(f"{'已更新' if existing else '已收录'}：{relative}")
-    print(
-        f"  {entry['pages'] or '?'} 页 / {human_size(size)} / "
-        f"sha256 {entry['sha256'][:12]}…"
-    )
+    print(f"{'已更新' if existing else '已登记'}：{entry['title']}")
+    print(f"  {entry['pages'] or '?'} 页 / {human_size(size)} / sha256 {entry['sha256'][:12]}…")
+    print(f"  下载：{download_url}")
 
 
 if __name__ == "__main__":
