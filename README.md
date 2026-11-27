@@ -41,7 +41,7 @@ python3 scripts/add_pdf.py --file <PDF 路径> --id <ascii-id> --series <系列>
 python3 scripts/check_repo.py
 ```
 
-校验 catalog 与文件是否一一对应，页数、大小、sha256 是否一致。建议每次提交前跑一遍。
+校验 catalog 与文件是否一一对应，页数、大小、sha256 是否一致；每次 push 时 CI 也会跑一遍。
 
 ## 许可
 
