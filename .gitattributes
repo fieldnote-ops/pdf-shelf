@@ -1,0 +1,4 @@
+# PDF 是二进制，不做行级 diff 与自动合并
+*.pdf binary
+*.png binary
+*.jpg binary
