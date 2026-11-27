@@ -10,8 +10,8 @@ entries:
   pages: 1140
   size_bytes: 13706594
   sha256: 5d6d3625ba3c366cdf3aff11f54fe1eb5f8d38e871cdca32c59b2e986eda4516
-  filename: 从内核到智能体-系统原理解剖图解全集-2026.11.pdf
-  download_url: https://github.com/fieldnote-ops/pdf-shelf/releases/download/v2026.11/从内核到智能体-系统原理解剖图解全集-2026.11.pdf
+  filename: from-kernel-to-agent-2026.11.pdf
+  download_url: https://github.com/fieldnote-ops/pdf-shelf/releases/download/v2026.11/from-kernel-to-agent-2026.11.pdf
   mirrors: []
   status: partial
   status_note: 第七篇「完整嵌入式系统」尚未整合完整，详见 docs/嵌入式现状.md

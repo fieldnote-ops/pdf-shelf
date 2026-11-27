@@ -14,7 +14,7 @@
 
 | 系列 | 书名 | 版本 | 页数 | 大小 | 状态 | 下载 |
 |---|---|---|---|---|---|---|
-| 从内核到智能体 | 从内核到智能体：系统原理解剖图解全集 | 2026.11 | 1140 | 13.1 MiB | ⚠️ 部分整合 | [PDF](<https://github.com/fieldnote-ops/pdf-shelf/releases/download/v2026.11/从内核到智能体-系统原理解剖图解全集-2026.11.pdf>) |
+| 从内核到智能体 | 从内核到智能体：系统原理解剖图解全集 | 2026.11 | 1140 | 13.1 MiB | ⚠️ 部分整合 | [PDF](<https://github.com/fieldnote-ops/pdf-shelf/releases/download/v2026.11/from-kernel-to-agent-2026.11.pdf>) |
 
 状态说明：
 - **从内核到智能体：系统原理解剖图解全集**：第七篇「完整嵌入式系统」尚未整合完整，详见 docs/嵌入式现状.md

@@ -25,6 +25,7 @@ URL_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases/download/([^
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 VERSION_RE = re.compile(r"^\d{4}\.\d{2}$")
+FILENAME_RE = re.compile(r"^[A-Za-z0-9._-]+\.pdf$")
 REQUIRED = (
     "id",
     "title",
@@ -144,8 +145,8 @@ def main() -> int:
             error(f"{label}：sha256 必须是 64 位小写十六进制")
 
         filename = str(entry["filename"])
-        if "/" in filename or not filename.lower().endswith(".pdf"):
-            error(f"{label}：filename 必须是单个 PDF 文件名")
+        if "/" in filename or not FILENAME_RE.fullmatch(filename):
+            error(f"{label}：filename 必须是 ASCII 的单个 PDF 文件名")
         if filename in seen_names:
             error(f"filename 重复：{filename}")
         seen_names.add(filename)

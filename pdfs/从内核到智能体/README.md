@@ -1,6 +1,6 @@
 # 从内核到智能体：系统原理解剖图解全集
 
-- 下载：[从内核到智能体-系统原理解剖图解全集-2026.11.pdf](<https://github.com/fieldnote-ops/pdf-shelf/releases/download/v2026.11/从内核到智能体-系统原理解剖图解全集-2026.11.pdf>)（13.1 MiB）
+- 下载：[from-kernel-to-agent-2026.11.pdf](<https://github.com/fieldnote-ops/pdf-shelf/releases/download/v2026.11/from-kernel-to-agent-2026.11.pdf>)（13.1 MiB）
 - 版本：2026.11，2026-11-18 构建
 - 规模：两卷八篇，1140 页
 - sha256：`5d6d3625ba3c366cdf3aff11f54fe1eb5f8d38e871cdca32c59b2e986eda4516`

@@ -237,9 +237,11 @@ def main() -> None:
         fail(f"catalog 已存在 id：{args.id}（换版请加 --replace）")
 
     title = args.title.strip()
-    filename = safe_name(args.filename or f"{title}-{args.version}.pdf")
+    filename = (args.filename or f"{args.id}-{args.version}.pdf").strip()
     if not filename.lower().endswith(".pdf"):
         filename += ".pdf"
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", filename):
+        fail("资产文件名只用 ASCII 字母、数字、点、下划线、连字符（GitHub 会把非 ASCII 替换成 -）")
 
     size = source.stat().st_size
     if size > 2 * 1024 * 1024 * 1024:
